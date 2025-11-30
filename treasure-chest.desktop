@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Treasure Chest
+Comment=Stardew Valley Mod Manager
+Exec=/home/hrmsh/dev/Codes/others/sdv-mods-manager/src-tauri/target/debug/sdv-mods-manager %u
+Icon=/home/hrmsh/dev/Codes/others/sdv-mods-manager/src-tauri/icons/128x128.png
+Terminal=true
+Type=Application
+Categories=Game;Utility;
+MimeType=x-scheme-handler/nxm;
+StartupNotify=true
