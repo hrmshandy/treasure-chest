@@ -1,0 +1,23 @@
+# Tasks
+
+- [x] Backend: Implement `check_mod_updates` command <!-- id: 0 -->
+    - [x] Read `.nexus_meta` for mod_id and file_id  
+    - [x] Query Nexus API `/v1/games/stardewvalley/mods/{mod_id}.json` for latest file
+    - [x] Compare versions using semver
+    - [x] Return update status and latest version info
+- [x] Backend: Implement `update_mod` command <!-- id: 1 -->
+    - [x] Queue download for latest version
+    - [x] Backup current version
+    - [x] Auto-install when download complete
+- [x] Frontend: Implement `handleUpdateMod` in `App.tsx` <!-- id: 2 -->
+    - [x] Call `check_mod_updates` first
+    - [x] If update available, call `update_mod`
+    - [x] Show progress toast
+- [x] Frontend: Add "Check All Updates" button <!-- id: 3 -->
+    - [x] Batch check all mods with Nexus metadata
+    - [x] Update status for each mod
+    - [x] Show summary notification
+- [x] Frontend: Auto-check on app start <!-- id: 4 -->
+    - [x] Background check after mod list loads
+    - [x] Rate-limit to avoid API abuse
+- [x] Verify: Test update checking and installation <!-- id: 5 -->
