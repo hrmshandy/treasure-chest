@@ -69,13 +69,12 @@ export const Footer = () => {
               </div>
               <div className="w-20 h-1.5 bg-stone-800 rounded-full overflow-hidden">
                 <div
-                  className={`h-full transition-all duration-300 ${
-                    apiUsage.hourlyRemaining / apiUsage.hourlyLimit > 0.5
-                      ? 'bg-green-500'
-                      : apiUsage.hourlyRemaining / apiUsage.hourlyLimit > 0.2
+                  className={`h-full transition-all duration-300 ${apiUsage.hourlyRemaining / apiUsage.hourlyLimit > 0.5
+                    ? 'bg-green-500'
+                    : apiUsage.hourlyRemaining / apiUsage.hourlyLimit > 0.2
                       ? 'bg-orange-500'
                       : 'bg-red-500'
-                  }`}
+                    }`}
                   style={{ width: getUsageBarWidth(apiUsage.hourlyRemaining, apiUsage.hourlyLimit) }}
                 />
               </div>
@@ -94,13 +93,12 @@ export const Footer = () => {
               </div>
               <div className="w-20 h-1.5 bg-stone-800 rounded-full overflow-hidden">
                 <div
-                  className={`h-full transition-all duration-300 ${
-                    apiUsage.dailyRemaining / apiUsage.dailyLimit > 0.5
-                      ? 'bg-green-500'
-                      : apiUsage.dailyRemaining / apiUsage.dailyLimit > 0.2
+                  className={`h-full transition-all duration-300 ${apiUsage.dailyRemaining / apiUsage.dailyLimit > 0.5
+                    ? 'bg-green-500'
+                    : apiUsage.dailyRemaining / apiUsage.dailyLimit > 0.2
                       ? 'bg-orange-500'
                       : 'bg-red-500'
-                  }`}
+                    }`}
                   style={{ width: getUsageBarWidth(apiUsage.dailyRemaining, apiUsage.dailyLimit) }}
                 />
               </div>

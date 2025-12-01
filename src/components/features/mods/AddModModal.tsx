@@ -9,7 +9,7 @@ interface AddModModalProps {
 }
 
 export const AddModModal: React.FC<AddModModalProps> = ({ isOpen, onClose, onInstall }) => {
-    const [activeTab, setActiveTab] = useState<'url' | 'file'>('url');
+    const [activeTab, setActiveTab] = useState<'url' | 'file'>('file');
     const [url, setUrl] = useState('');
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
@@ -60,7 +60,7 @@ export const AddModModal: React.FC<AddModModalProps> = ({ isOpen, onClose, onIns
 
                     <div className="p-6">
                         {/* Tabs Header */}
-                        <div className="flex space-x-1 p-1 rounded-lg mb-6 border bg-stone-900 border-stone-800">
+                        {/* <div className="flex space-x-1 p-1 rounded-lg mb-6 border bg-stone-900 border-stone-800">
                             <button
                                 onClick={() => setActiveTab('url')}
                                 className={`flex-1 py-1.5 text-xs font-medium rounded-md shadow-sm transition-all font-mono ${activeTab === 'url' ? 'bg-stone-800 text-stone-100 border-stone-600' : 'text-stone-500 border-transparent hover:text-stone-300'}`}
@@ -73,7 +73,7 @@ export const AddModModal: React.FC<AddModModalProps> = ({ isOpen, onClose, onIns
                             >
                                 File Upload
                             </button>
-                        </div>
+                        </div> */}
 
                         {/* URL Tab Content */}
                         {activeTab === 'url' && (
