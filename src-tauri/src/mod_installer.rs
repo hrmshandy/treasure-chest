@@ -69,6 +69,8 @@ impl ModInstaller {
         archive_path: &Path,
         game_path: &Path,
         settings: &Settings,
+        nexus_info: Option<(u32, u32)>,
+        mod_name: Option<String>,
     ) -> Result<InstallResult, InstallError> {
         println!("Installing mod from: {}", archive_path.display());
 
@@ -78,112 +80,56 @@ impl ModInstaller {
         // Extract archive to temp directory
         let extract_dir = self.extract_archive(archive_path).await?;
 
-        // Detect archive structure and get mod folders to install
-        let mod_folders = self.detect_mod_folders(&extract_dir)?;
+        // Determine installation strategy
+        let (source_path, target_name) = self.determine_install_strategy(&extract_dir, archive_path, mod_name.clone())?;
 
-        if mod_folders.is_empty() {
-            return Err(InstallError::ManifestNotFound);
-        }
+        // Check for Frameworks
+        let is_framework = if let Some(name) = &mod_name {
+            settings.core_frameworks.contains(name)
+        } else {
+            // Fallback to checking target name if mod_name not provided
+            settings.core_frameworks.contains(&target_name)
+        };
 
-        println!("Found {} mod folder(s) in archive", mod_folders.len());
+        let install_base = if is_framework {
+            game_path.join("Mods").join("_Frameworks")
+        } else {
+            game_path.join("Mods")
+        };
 
-        // Install each mod folder
-        let mut installed_mods = Vec::new();
+        let install_path = install_base.join(&target_name);
+        println!("   Target install path: {}", install_path.display());
 
-        for (mod_folder_path, folder_name) in mod_folders {
-            println!("Installing mod folder: {}", folder_name);
+        // Handle existing mod
+        if install_path.exists() {
+            println!("   Mod folder already exists, backing up and replacing");
 
-            // Try to parse manifest if it exists
-            let manifest_path = mod_folder_path.join("manifest.json");
-            let (manifest, install_folder_name) = if manifest_path.exists() {
-                match self.parse_manifest(&manifest_path) {
-                    Ok(m) => {
-                        println!(
-                            "   {} {} v{} ({})",
-                            if m.content_pack_for.is_some() { "Content Pack:" } else { "SMAPI Mod:" },
-                            m.name,
-                            m.version,
-                            m.unique_id
-                        );
-                        // Use the Name field which includes prefixes like [CP], [FTM]
-                        let folder = m.name.clone();
-                        (m, folder)
-                    }
-                    Err(e) => {
-                        println!("   ⚠ Manifest parsing failed: {}", e);
-                        println!("   ✓ Using original folder name: {}", folder_name);
-                        // Use original folder name which includes [CP]/[FTM] prefix
-                        let manifest = ModManifest {
-                            name: folder_name.clone(),
-                            author: "Unknown".to_string(),
-                            version: "1.0.0".to_string(),
-                            unique_id: folder_name.clone(),
-                            description: None,
-                            dependencies: None,
-                            content_pack_for: None,
-                        };
-                        (manifest, folder_name.clone())
-                    }
-                }
-            } else {
-                println!("   ⚠ No manifest.json found, using original folder name");
-                // Use original folder name
-                let manifest = ModManifest {
-                    name: folder_name.clone(),
-                    author: "Unknown".to_string(),
-                    version: "1.0.0".to_string(),
-                    unique_id: folder_name.clone(),
-                    description: None,
-                    dependencies: None,
-                    content_pack_for: None,
-                };
-                (manifest, folder_name.clone())
-            };
-
-            // Use determined folder name
-            let install_path = game_path.join("Mods").join(&install_folder_name);
-
-            // Handle existing mod
-            if install_path.exists() {
-                println!("   Mod folder already exists, backing up and replacing");
-
-                if let Err(e) = self.backup_mod(&install_path, &install_folder_name) {
-                    eprintln!("   Failed to backup mod: {}", e);
-                }
-
-                fs::remove_dir_all(&install_path)?;
+            if let Err(e) = self.backup_mod(&install_path, &target_name) {
+                eprintln!("   Failed to backup mod: {}", e);
             }
 
-            // Install mod
-            if settings.auto_install {
-                match self.install_mod_files_with_rollback(&mod_folder_path, &install_path) {
-                    Ok(_) => {
-                        println!("   ✓ Installed to: {}", install_path.display());
-                        installed_mods.push((manifest, install_path.clone()));
-                    }
-                    Err(e) => {
-                        eprintln!("   ✗ Failed to install: {}", e);
-                        return Err(e);
-                    }
-                }
-            } else {
-                return Err(InstallError::InstallationFailed(
-                    "Auto-install is disabled".to_string(),
-                ));
-            }
+            self.force_remove_dir_all(&install_path)?;
         }
 
-        // Check if at least one mod was installed
-        if installed_mods.is_empty() {
+        // Install mod
+        if settings.auto_install {
+            match self.install_mod_files_with_rollback(&source_path, &install_path) {
+                Ok(_) => {
+                    println!("   ✓ Installed to: {}", install_path.display());
+                }
+                Err(e) => {
+                    eprintln!("   ✗ Failed to install: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
             return Err(InstallError::InstallationFailed(
-                "No mod folders found in archive".to_string(),
+                "Auto-install is disabled".to_string(),
             ));
         }
 
-        println!("Successfully installed {} mod folder(s)", installed_mods.len());
-
         // Cleanup temp directory
-        if let Err(e) = fs::remove_dir_all(&extract_dir) {
+        if let Err(e) = self.force_remove_dir_all(&extract_dir) {
             eprintln!("Failed to cleanup temp directory: {}", e);
         }
 
@@ -196,25 +142,66 @@ impl ModInstaller {
             }
         }
 
-        // Emit events for all installed mods
-        for (manifest, install_path) in &installed_mods {
-            let result = InstallResult {
-                mod_name: manifest.name.clone(),
-                version: manifest.version.clone(),
-                unique_id: manifest.unique_id.clone(),
-                install_path: install_path.clone(),
-            };
-            let _ = self.app_handle.emit("mod-installed", &result);
+        // Try to find manifest in the installed location to get version/ID
+        let manifest_path = install_path.join("manifest.json");
+        let (version, unique_id) = if manifest_path.exists() {
+            match self.parse_manifest(&manifest_path) {
+                Ok(m) => (m.version, m.unique_id),
+                Err(_) => ("Unknown".to_string(), target_name.clone()),
+            }
+        } else {
+            ("Unknown".to_string(), target_name.clone())
+        };
+
+        // Write Nexus metadata if available
+        if let Some((mod_id, file_id)) = nexus_info {
+            if let Err(e) = self.write_nexus_meta(&install_path, mod_id, file_id) {
+                eprintln!("Failed to write Nexus metadata: {}", e);
+            }
         }
 
-        // Return the first mod's result
-        let (first_mod, first_path) = &installed_mods[0];
-        Ok(InstallResult {
-            mod_name: first_mod.name.clone(),
-            version: first_mod.version.clone(),
-            unique_id: first_mod.unique_id.clone(),
-            install_path: first_path.clone(),
-        })
+        let result = InstallResult {
+            mod_name: mod_name.unwrap_or(target_name),
+            version,
+            unique_id,
+            install_path: install_path.clone(),
+        };
+
+        let _ = self.app_handle.emit("mod-installed", &result);
+
+        Ok(result)
+    }
+
+    /// Determine installation strategy based on extracted contents
+    /// Returns (source_path_to_copy_from, target_folder_name)
+    fn determine_install_strategy(
+        &self,
+        extract_dir: &Path,
+        archive_path: &Path,
+        mod_name: Option<String>,
+    ) -> Result<(PathBuf, String), InstallError> {
+        let entries: Vec<_> = fs::read_dir(extract_dir)?
+            .filter_map(|e| e.ok())
+            .collect();
+
+        // Case A: Single folder
+        if entries.len() == 1 && entries[0].path().is_dir() {
+            let folder_name = entries[0].file_name().to_string_lossy().to_string();
+            println!("   Strategy: Single folder detected ({})", folder_name);
+            Ok((entries[0].path(), folder_name))
+        } else {
+            // Case B: Multi-folder / Loose files
+            // Use mod_name if available, otherwise archive filename
+            let target_name = mod_name.unwrap_or_else(|| {
+                archive_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+            println!("   Strategy: Multi-item/Loose files detected. Using container: {}", target_name);
+            Ok((extract_dir.to_path_buf(), target_name))
+        }
     }
 
     /// Extract a ZIP archive to the temp directory
@@ -230,7 +217,7 @@ impl ModInstaller {
 
         // Remove old extraction if exists
         if extract_dir.exists() {
-            fs::remove_dir_all(&extract_dir)?;
+            self.force_remove_dir_all(&extract_dir)?;
         }
 
         fs::create_dir_all(&extract_dir)?;
@@ -269,7 +256,18 @@ impl ModInstaller {
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Some(mode) = file.unix_mode() {
-                    fs::set_permissions(&outpath, fs::Permissions::from_mode(mode))?;
+                    // Ensure we always have write permissions for the user
+                    // This prevents "Permission denied" errors when extracting files into read-only directories
+                    // or when trying to overwrite read-only files (though we clean up first)
+                    let safe_mode = if file.name().ends_with('/') {
+                        // For directories, ensure rwx for user (0o700)
+                        mode | 0o700
+                    } else {
+                        // For files, ensure rw for user (0o600)
+                        mode | 0o600
+                    };
+
+                    fs::set_permissions(&outpath, fs::Permissions::from_mode(safe_mode))?;
                 }
             }
         }
@@ -278,105 +276,7 @@ impl ModInstaller {
         Ok(extract_dir)
     }
 
-    /// Detect mod folders in the extracted archive
-    /// Returns: Vec<(mod_folder_path, folder_name)>
-    fn detect_mod_folders(&self, extract_dir: &Path) -> Result<Vec<(PathBuf, String)>, InstallError> {
-        let mut mod_folders = Vec::new();
 
-        println!("🔍 Detecting mod folders in: {}", extract_dir.display());
-
-        // Read the extracted directory
-        let entries: Vec<_> = fs::read_dir(extract_dir)?
-            .filter_map(|e| e.ok())
-            .collect();
-
-        println!("   Found {} entries at root level", entries.len());
-        for (i, entry) in entries.iter().enumerate() {
-            println!("   Entry {}: {} ({})",
-                i + 1,
-                entry.file_name().to_string_lossy(),
-                if entry.path().is_dir() { "dir" } else { "file" }
-            );
-        }
-
-        // Case 1: Single file/folder at root - check if it contains mods
-        if entries.len() == 1 && entries[0].path().is_dir() {
-            let root_folder = &entries[0].path();
-            let root_name = entries[0].file_name().to_string_lossy().to_string();
-
-            println!("\n📁 Archive has single root folder: {}", root_name);
-            println!("   Checking contents of root folder...");
-
-            // Check if this root folder contains multiple mod folders
-            let subentries: Vec<_> = fs::read_dir(root_folder)?
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_dir())
-                .collect();
-
-            println!("   Found {} subfolders", subentries.len());
-            for (i, entry) in subentries.iter().enumerate() {
-                let has_manifest = entry.path().join("manifest.json").exists();
-                println!("   Subfolder {}: {} (manifest: {})",
-                    i + 1,
-                    entry.file_name().to_string_lossy(),
-                    if has_manifest { "✓" } else { "✗" }
-                );
-            }
-
-            // Check if subfolders look like mods (have manifest.json or are named like mods)
-            let subfolders_with_manifests: Vec<_> = subentries
-                .iter()
-                .filter(|e| e.path().join("manifest.json").exists())
-                .collect();
-
-            println!("   {} subfolders have manifest.json", subfolders_with_manifests.len());
-
-            if subfolders_with_manifests.len() > 1 {
-                // Multiple mod folders detected - install each one
-                println!("\n✅ Decision: Install {} mod folders from inside root", subfolders_with_manifests.len());
-                for entry in subfolders_with_manifests {
-                    let folder_name = entry.file_name().to_string_lossy().to_string();
-                    println!("   → Will install: {}", folder_name);
-                    mod_folders.push((entry.path(), folder_name));
-                }
-            } else if !subentries.is_empty() && subentries.iter().all(|e| e.path().join("manifest.json").exists()) {
-                // All subfolders have manifests - install each one
-                println!("\n✅ Decision: All {} subfolders have manifests, installing each", subentries.len());
-                for entry in subentries {
-                    let folder_name = entry.file_name().to_string_lossy().to_string();
-                    println!("   → Will install: {}", folder_name);
-                    mod_folders.push((entry.path(), folder_name));
-                }
-            } else if root_folder.join("manifest.json").exists() {
-                // Root folder itself is a mod
-                println!("\n✅ Decision: Root folder is a single mod");
-                println!("   → Will install: {}", root_name);
-                mod_folders.push((root_folder.clone(), root_name));
-            } else {
-                // No manifests found, but install all subfolders anyway (content packs, etc.)
-                println!("\n✅ Decision: Installing all {} subfolders (no manifest check)", subentries.len());
-                for entry in subentries {
-                    let folder_name = entry.file_name().to_string_lossy().to_string();
-                    println!("   → Will install: {}", folder_name);
-                    mod_folders.push((entry.path(), folder_name));
-                }
-            }
-        } else {
-            // Case 2: Multiple files/folders at root - each folder is potentially a mod
-            println!("\n✅ Decision: Multiple items at root, installing all {} folders", entries.len());
-
-            for entry in entries {
-                if entry.path().is_dir() {
-                    let folder_name = entry.file_name().to_string_lossy().to_string();
-                    println!("   → Will install: {}", folder_name);
-                    mod_folders.push((entry.path(), folder_name));
-                }
-            }
-        }
-
-        println!("\n📊 Total mod folders detected: {}\n", mod_folders.len());
-        Ok(mod_folders)
-    }
 
     /// Find all manifest.json files in the extracted directory (legacy)
     #[allow(dead_code)]
@@ -420,39 +320,64 @@ impl ModInstaller {
         Err(InstallError::ManifestNotFound)
     }
 
-    /// Extract just the UniqueID from a manifest.json (fallback for malformed manifests)
-    fn extract_unique_id(&self, manifest_path: &Path) -> Result<String, InstallError> {
-        let file = File::open(manifest_path)?;
-        let mut reader = BufReader::new(file);
 
-        // Read and handle BOM
-        let mut content = String::new();
-        reader.read_to_string(&mut content)?;
-        let mut content = content.trim_start_matches('\u{feff}').to_string();
+    /// Strip JSON comments (/* */ and //) from a string
+    fn strip_json_comments(input: &str) -> String {
+        let mut result = String::new();
+        let mut chars = input.chars().peekable();
+        let mut in_string = false;
+        let mut escape_next = false;
 
-        // Fix common JSON issues: remove trailing commas before closing braces/brackets
-        // This handles manifests with trailing commas which are common in Stardew mods
-        content = content
-            .replace(",\n}", "\n}")
-            .replace(",\r\n}", "\r\n}")
-            .replace(", }", " }")
-            .replace(",]", "]")
-            .replace(", ]", " ]");
+        while let Some(ch) = chars.next() {
+            if escape_next {
+                result.push(ch);
+                escape_next = false;
+                continue;
+            }
 
-        // Parse as generic JSON
-        let value: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| InstallError::InvalidManifest(format!("Invalid JSON: {}", e)))?;
+            match ch {
+                '\\' if in_string => {
+                    result.push(ch);
+                    escape_next = true;
+                }
+                '"' => {
+                    in_string = !in_string;
+                    result.push(ch);
+                }
+                '/' if !in_string => {
+                    if let Some(&next) = chars.peek() {
+                        if next == '/' {
+                            // Single-line comment
+                            chars.next(); // consume second /
+                            while let Some(c) = chars.next() {
+                                if c == '\n' || c == '\r' {
+                                    result.push(c);
+                                    break;
+                                }
+                            }
+                        } else if next == '*' {
+                            // Multi-line comment
+                            chars.next(); // consume *
+                            let mut prev = ' ';
+                            while let Some(c) = chars.next() {
+                                if prev == '*' && c == '/' {
+                                    break;
+                                }
+                                prev = c;
+                            }
+                            result.push(' '); // Replace comment with space
+                        } else {
+                            result.push(ch);
+                        }
+                    } else {
+                        result.push(ch);
+                    }
+                }
+                _ => result.push(ch),
+            }
+        }
 
-        // Extract UniqueID from root level (NOT from ContentPackFor)
-        // Content packs have two UniqueID fields:
-        // - Root level: The mod's own UniqueID (e.g., "FlashShifter.StardewValleyExpandedCP")
-        // - ContentPackFor.UniqueID: The framework it depends on (e.g., "Pathoschild.ContentPatcher")
-        // We want the root level one!
-        value
-            .get("UniqueID")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| InstallError::InvalidManifest("UniqueID field not found at root level".to_string()))
+        result
     }
 
     /// Parse manifest.json
@@ -464,6 +389,9 @@ impl ModInstaller {
         let mut content = String::new();
         reader.read_to_string(&mut content)?;
         let mut content = content.trim_start_matches('\u{feff}').to_string();
+
+        // Strip JSON comments (/* */ and //)
+        content = Self::strip_json_comments(&content);
 
         // Fix common JSON issues: remove trailing commas before closing braces/brackets
         content = content
@@ -536,38 +464,13 @@ impl ModInstaller {
         if let Err(e) = self.copy_dir_recursive(source, destination) {
             eprintln!("Installation failed, rolling back...");
             // Rollback: Delete the destination directory
-            let _ = fs::remove_dir_all(destination);
+            let _ = self.force_remove_dir_all(destination);
             return Err(e);
         }
 
         Ok(())
     }
 
-    /// Verify that files were copied correctly
-    fn verify_installation(&self, source: &Path, destination: &Path) -> Result<(), String> {
-        let source_count = WalkDir::new(source).into_iter().count();
-        let dest_count = WalkDir::new(destination).into_iter().count();
-
-        if source_count != dest_count {
-            return Err(format!(
-                "File count mismatch: Source={}, Destination={}",
-                source_count, dest_count
-            ));
-        }
-        Ok(())
-    }
-
-    /// Get version of an installed mod
-    fn get_mod_version(&self, mod_path: &Path) -> Option<String> {
-        let manifest_path = mod_path.join("manifest.json");
-        if let Ok(manifest) = self.parse_manifest(&manifest_path) {
-            Some(manifest.version)
-        } else {
-            None
-        }
-    }
-
-    /// Generate a unique path for "Keep Both" strategy
     #[allow(dead_code)]
     fn get_unique_path(&self, base_dir: &Path, unique_id: &str) -> PathBuf {
         let mut path = base_dir.join(unique_id);
@@ -633,11 +536,145 @@ impl ModInstaller {
         }
         Ok(())
     }
+
+    /// Write Nexus metadata to a hidden file in the mod directory
+    fn write_nexus_meta(&self, mod_path: &Path, mod_id: u32, file_id: u32) -> std::io::Result<()> {
+        let meta_path = mod_path.join(".nexus_meta");
+        let meta_content = serde_json::json!({
+            "mod_id": mod_id,
+            "file_id": file_id
+        });
+        
+        let file = File::create(meta_path)?;
+        serde_json::to_writer_pretty(file, &meta_content)?;
+        Ok(())
+    }
+
+    /// Force remove a directory by ensuring write permissions first
+    fn force_remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+
+        // Try normal remove first
+        if fs::remove_dir_all(path).is_ok() {
+            return Ok(());
+        }
+
+        println!("   ⚠ Normal remove failed, attempting to force permissions on: {}", path.display());
+
+        // Make everything writable
+        for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+             #[cfg(unix)]
+             {
+                 use std::os::unix::fs::PermissionsExt;
+                 let p = entry.path();
+                 if let Ok(metadata) = p.metadata() {
+                     let mut perms = metadata.permissions();
+                     let mode = perms.mode() | 0o700; // u+rwx
+                     perms.set_mode(mode);
+                     let _ = fs::set_permissions(p, perms);
+                 }
+             }
+        }
+
+        fs::remove_dir_all(path)
+    }
+}
+
+/// Scan a directory for mods
+pub fn scan_mods(game_path: &Path) -> Vec<crate::models::Mod> {
+    let mods_dir = game_path.join("Mods");
+    let mut mods = Vec::new();
+
+    if !mods_dir.exists() {
+        return mods;
+    }
+
+    // Helper function to scan a directory recursively
+    fn scan_dir(dir: &Path, mods: &mut Vec<crate::models::Mod>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Check if this folder is a mod (has manifest.json)
+                    let manifest_path = path.join("manifest.json");
+                    if manifest_path.exists() {
+                        if let Ok(manifest_content) = fs::read_to_string(&manifest_path) {
+                            // Strip BOM and JSON comments
+                            let content = manifest_content.trim_start_matches('\u{feff}');
+                            let content = ModInstaller::strip_json_comments(content);
+                            
+                            if let Ok(manifest) = serde_json::from_str::<ModManifest>(&content) {
+                                // Check if enabled based on folder name
+                                // Convention: folder name ending in ".disabled" means disabled
+                                let folder_name = path.file_name().unwrap().to_string_lossy();
+                                let is_enabled = !folder_name.ends_with(".disabled");
+
+                                // Generate a new ID for the mod, as it's not stored in the manifest
+                                let id = uuid::Uuid::new_v4().to_string();
+
+                                mods.push(crate::models::Mod {
+                                    id,
+                                    name: manifest.name,
+                                    author: manifest.author,
+                                    version: manifest.version,
+                                    unique_id: manifest.unique_id,
+                                    description: manifest.description,
+                                    dependencies: manifest.dependencies,
+                                    content_pack_for: manifest.content_pack_for,
+                                    path: path.to_string_lossy().to_string(),
+                                    is_enabled,
+                                    nexus_mod_id: {
+                                        // Read from .nexus_meta if available
+                                        let meta_path = path.join(".nexus_meta");
+                                        if meta_path.exists() {
+                                            fs::read_to_string(&meta_path)
+                                                .ok()
+                                                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                                                .and_then(|json| json.get("mod_id").and_then(|v| v.as_u64()).map(|v| v as u32))
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                    nexus_file_id: {
+                                        // Read from .nexus_meta if available
+                                        let meta_path = path.join(".nexus_meta");
+                                        if meta_path.exists() {
+                                            fs::read_to_string(&meta_path)
+                                                .ok()
+                                                .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+                                                .and_then(|json| json.get("file_id").and_then(|v| v.as_u64()).map(|v| v as u32))
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                });
+                            }
+                        }
+                    } else {
+                        // Recurse into subdirectories (e.g. for _Frameworks or organized folders)
+                        // But don't recurse if it's a disabled mod folder (which might contain the manifest inside)
+                        // Actually, we should recurse to find nested mods, but standard structure is Mod/manifest.json
+                        scan_dir(&path, mods);
+                    }
+                }
+            }
+        }
+    }
+
+    scan_dir(&mods_dir, &mut mods);
+    
+    // Also scan _Frameworks if it exists (it's already covered by recursion above, but just to be sure/explicit if logic changes)
+    // The recursion above handles it.
+
+    mods
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use semver::Version;
 
     #[test]
     fn test_manifest_parsing() {
@@ -667,5 +704,47 @@ mod tests {
         assert!(v2 > v1);
         assert!(v1 == v3);
         assert!(v1 < v2);
+    }
+
+    #[test]
+    fn test_nexus_metadata() {
+        // Setup temp directory
+        let temp_dir = std::env::temp_dir().join("sdv_mgr_test_nexus");
+        let mods_dir = temp_dir.join("Mods");
+        let mod_dir = mods_dir.join("TestMod");
+        
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir).unwrap();
+        }
+        fs::create_dir_all(&mod_dir).unwrap();
+
+        // Create manifest
+        let manifest_json = r#"{
+            "Name": "Test Mod",
+            "Author": "Test Author",
+            "Version": "1.0.0",
+            "UniqueID": "TestAuthor.TestMod"
+        }"#;
+        fs::write(mod_dir.join("manifest.json"), manifest_json).unwrap();
+
+        // Write metadata manually (simulating write_nexus_meta)
+        let meta_path = mod_dir.join(".nexus_meta");
+        let meta_content = serde_json::json!({
+            "mod_id": 12345,
+            "file_id": 67890
+        });
+        fs::write(meta_path, serde_json::to_string(&meta_content).unwrap()).unwrap();
+
+        // Scan mods
+        let mods = scan_mods(&temp_dir);
+
+        // Verify
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "Test Mod");
+        assert_eq!(mods[0].nexus_mod_id, Some(12345));
+        assert_eq!(mods[0].nexus_file_id, Some(67890));
+
+        // Cleanup
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }

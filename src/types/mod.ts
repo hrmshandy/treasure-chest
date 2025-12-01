@@ -7,7 +7,7 @@ export interface Mod {
     uniqueId: string;
     dependencies?: string[];
     isEnabled: boolean;
-    is_enabled: boolean; // From Rust
+    path: string;
     installDate: string;
     updateDate?: string;
     status: 'working' | 'update-available' | 'error' | 'disabled';
