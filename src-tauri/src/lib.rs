@@ -5,7 +5,7 @@ mod download_manager;
 mod mod_installer;
 mod api_usage_tracker;
 
-use models::{Mod, ModManifest};
+use models::Mod;
 use settings::{Settings, auto_detect_game_path, detect_smapi_path, validate_game_path, validate_smapi_path};
 use nxm_protocol::NxmUrl;
 use download_manager::{DownloadManager, DownloadTask};
@@ -14,7 +14,6 @@ use api_usage_tracker::{ApiUsageTracker, ApiUsage};
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 use tauri::{Emitter, Listener, Manager};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -67,41 +66,7 @@ fn scan_mods(game_path: String) -> Result<Vec<Mod>, String> {
         return Err("Mods folder not found".to_string());
     }
 
-    let mut mods = Vec::new();
-
-    for entry in WalkDir::new(&mods_path)
-        .min_depth(1)
-        .max_depth(2)
-        .into_iter()
-        .filter_map(|e| e.ok()) 
-    {
-        if entry.file_name() == "manifest.json" {
-            if let Ok(content) = fs::read_to_string(entry.path()) {
-                let content = content.trim_start_matches('\u{feff}');
-                
-                if let Ok(manifest) = serde_json::from_str::<ModManifest>(content) {
-                    let path = entry.path().parent().unwrap().to_string_lossy().to_string();
-                    let id = uuid::Uuid::new_v4().to_string();
-                    
-                    let folder_name = entry.path().parent().unwrap().file_name().unwrap().to_string_lossy();
-                    let is_enabled = !folder_name.starts_with(".");
-
-                    mods.push(Mod {
-                        id,
-                        name: manifest.name,
-                        author: manifest.author,
-                        version: manifest.version,
-                        unique_id: manifest.unique_id,
-                        description: manifest.description,
-                        path,
-                        is_enabled,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(mods)
+    Ok(mod_installer::scan_mods(Path::new(&game_path)))
 }
 
 // Settings commands
@@ -189,7 +154,7 @@ async fn install_mod_from_file(
     let installer = ModInstaller::new(app_handle.clone(), temp_dir);
 
     installer
-        .install_from_archive(&PathBuf::from(file_path), &game_path, &settings)
+        .install_from_archive(&PathBuf::from(file_path), &game_path, &settings, None, None)
         .await
         .map_err(|e| e.to_string())
 }
@@ -242,6 +207,173 @@ async fn open_mod_folder(path: String) -> Result<(), String> {
         return Err("Mod folder does not exist".to_string());
     }
     open_folder(&path)
+}
+
+#[tauri::command]
+async fn open_game_mods_folder(game_path: String) -> Result<(), String> {
+    let mods_path = Path::new(&game_path).join("Mods");
+    if !mods_path.exists() {
+        fs::create_dir_all(&mods_path).map_err(|e| e.to_string())?;
+    }
+    open_folder(&mods_path)
+}
+
+#[tauri::command]
+async fn toggle_mod_enabled(mod_path: String, enabled: bool) -> Result<String, String> {
+    let path = PathBuf::from(&mod_path);
+    if !path.exists() {
+        return Err("Mod path does not exist".to_string());
+    }
+
+    let parent = path.parent().ok_or("Invalid mod path")?;
+    let file_name = path.file_name().ok_or("Invalid mod path")?.to_string_lossy().to_string();
+
+    let new_name = if enabled {
+        // Enable: Remove .disabled suffix if present
+        if file_name.ends_with(".disabled") {
+            file_name.trim_end_matches(".disabled").to_string()
+        } else {
+            return Ok(mod_path); // Already enabled
+        }
+    } else {
+        // Disable: Add .disabled suffix if not present
+        if !file_name.ends_with(".disabled") {
+            format!("{}.disabled", file_name)
+        } else {
+            return Ok(mod_path); // Already disabled
+        }
+    };
+
+    let new_path = parent.join(&new_name);
+    fs::rename(&path, &new_path).map_err(|e| e.to_string())?;
+
+    Ok(new_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn delete_mod(_app_handle: tauri::AppHandle, mod_path: String) -> Result<(), String> {
+    let path = PathBuf::from(&mod_path);
+    if !path.exists() {
+        return Err("Mod path does not exist".to_string());
+    }
+
+    // Use the force_remove_dir_all method through a helper
+    fn force_remove(path: &Path) -> std::io::Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+
+        // Try normal remove first
+        if fs::remove_dir_all(path).is_ok() {
+            return Ok(());
+        }
+
+        println!("   ⚠ Normal remove failed, attempting to force permissions on: {}", path.display());
+
+        // Make everything writable
+        use walkdir::WalkDir;
+        for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+             #[cfg(unix)]
+             {
+                 use std::os::unix::fs::PermissionsExt;
+                 let p = entry.path();
+                 if let Ok(metadata) = p.metadata() {
+                     let mut perms = metadata.permissions();
+                     let mode = perms.mode() | 0o700; // u+rwx
+                     perms.set_mode(mode);
+                     let _ = fs::set_permissions(p, perms);
+                 }
+             }
+        }
+
+        fs::remove_dir_all(path)
+    }
+
+    force_remove(&path).map_err(|e| format!("Failed to delete mod: {}", e))?;
+    
+    println!("Successfully deleted mod at: {}", path.display());
+    Ok(())
+}
+
+#[derive(Debug, serde::Serialize)]
+struct UpdateInfo {
+    has_update: bool,
+    current_version: String,
+    latest_version: Option<String>,
+    latest_file_id: Option<u32>,
+}
+
+#[tauri::command]
+async fn check_mod_updates(
+    app_handle: tauri::AppHandle,
+    _mod_path: String,
+    current_version: String,
+    nexus_mod_id: u32,
+) -> Result<UpdateInfo, String> {
+    println!("Checking updates for mod {} (version {})", nexus_mod_id, current_version);
+
+    // Query Nexus API for mod information
+    let api_tracker = app_handle.state::<ApiUsageTracker>();
+    let settings = Settings::load(&app_handle).map_err(|e| e.to_string())?;
+    
+    let api_key = settings.nexus_api_key;
+    if api_key.is_empty() {
+        return Err("Nexus API key not configured".to_string());
+    }
+
+    let url = format!("https://api.nexusmods.com/v1/games/stardewvalley/mods/{}.json", nexus_mod_id);
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("apikey", &api_key)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch mod info: {}", e))?;
+
+    // Update API usage
+    api_tracker.inner().update_from_headers(response.headers()).await;
+
+    if !response.status().is_success() {
+        return Err(format!("API request failed with status: {}", response.status()));
+    }
+
+    let mod_info: serde_json::Value = response.json().await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    // Get the latest file version
+    // The API returns mod info, we need to find the latest main file
+    let latest_version = mod_info
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let latest_file_id = mod_info
+        .get("latest_file_id")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+
+    // Compare versions using semver if possible
+    let has_update = if let Some(ref latest) = latest_version {
+        match (semver::Version::parse(&current_version), semver::Version::parse(latest)) {
+            (Ok(current), Ok(latest)) => latest > current,
+            _ => {
+                // Fallback to string comparison if semver parsing fails
+                latest != &current_version
+            }
+        }
+    } else {
+        false
+    };
+
+    println!("Update check result: has_update={}, latest_version={:?}", has_update, latest_version);
+
+    Ok(UpdateInfo {
+        has_update,
+        current_version,
+        latest_version,
+        latest_file_id,
+    })
 }
 
 fn open_folder(path: &Path) -> Result<(), String> {
@@ -404,7 +536,10 @@ pub fn run() {
                     let installer = ModInstaller::new(handle.clone(), temp_dir);
                     let game_path = PathBuf::from(&settings.game_path);
 
-                    match installer.install_from_archive(&file_path, &game_path, &settings).await {
+                    let nexus_info = Some((download.nxm_url.mod_id, download.nxm_url.file_id));
+                    let mod_name = download.mod_name.clone();
+
+                    match installer.install_from_archive(&file_path, &game_path, &settings, nexus_info, mod_name).await {
                         Ok(result) => {
                             println!("Mod installed successfully: {} v{}", result.mod_name, result.version);
                         }
@@ -537,8 +672,60 @@ pub fn run() {
             install_mod_from_file,
             test_nxm_url,
             open_downloads_folder,
-            open_mod_folder
+            open_downloads_folder,
+            open_mod_folder,
+            open_game_mods_folder,
+            toggle_mod_enabled,
+            delete_mod,
+            delete_mod,
+            check_mod_updates,
+            launch_game
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn launch_game(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let settings = Settings::load(&app_handle).map_err(|e| e.to_string())?;
+    
+    if settings.smapi_path.is_empty() {
+        return Err("SMAPI path not configured. Please set it in settings.".to_string());
+    }
+
+    let smapi_path = PathBuf::from(&settings.smapi_path);
+    if !smapi_path.exists() {
+        return Err("SMAPI executable not found at configured path".to_string());
+    }
+
+    // Determine working directory (usually parent of executable)
+    let working_dir = smapi_path.parent().unwrap_or(&smapi_path);
+
+    println!("🚀 Launching game from: {}", smapi_path.display());
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new(&smapi_path)
+            .current_dir(working_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to launch game: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&smapi_path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch game: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new(&smapi_path)
+            .current_dir(working_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to launch game: {}", e))?;
+    }
+
+    Ok(())
 }
