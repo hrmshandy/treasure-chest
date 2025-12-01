@@ -8,10 +8,10 @@ export const MOCK_MODS: Mod[] = [
         version: '1.30.0',
         uniqueId: 'Pathoschild.ContentPatcher',
         isEnabled: true,
-        is_enabled: true,
         installDate: 'Oct 24, 2023',
         status: 'working',
         endorsements: 12000,
+        path: 'Pathoschild.ContentPatcher',
     },
     {
         id: '2',
@@ -20,10 +20,10 @@ export const MOCK_MODS: Mod[] = [
         version: '1.33.0',
         uniqueId: 'CJBok.CheatsMenu',
         isEnabled: true,
-        is_enabled: true,
         installDate: 'Aug 10, 2023',
         status: 'update-available',
         endorsements: 8500,
+        path: 'CJBok.CheatsMenu',
     },
     {
         id: '3',
@@ -32,9 +32,9 @@ export const MOCK_MODS: Mod[] = [
         version: '1.15.0',
         uniqueId: 'spacechase0.SpaceCore',
         isEnabled: false,
-        is_enabled: false,
         installDate: 'Sep 01, 2023',
         status: 'error',
         endorsements: 4000,
+        path: 'spacechase0.SpaceCore',
     }
 ];
