@@ -23,6 +23,8 @@ pub struct Settings {
     pub confirm_before_install: bool,
     #[serde(rename = "deleteAfterInstall")]
     pub delete_after_install: bool,
+    #[serde(rename = "coreFrameworks", default)]
+    pub core_frameworks: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -59,6 +61,12 @@ impl Default for Settings {
             auto_install: true,
             confirm_before_install: false,
             delete_after_install: false,
+            core_frameworks: vec![
+                "Content Patcher".to_string(),
+                "Farm Type Manager".to_string(),
+                "Json Assets".to_string(),
+                "SpaceCore".to_string(),
+            ],
         }
     }
 }

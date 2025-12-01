@@ -13,6 +13,7 @@ export interface Settings {
   autoInstall: boolean;
   confirmBeforeInstall: boolean;
   deleteAfterInstall: boolean;
+  coreFrameworks: string[];
 }
 
 export const defaultSettings: Settings = {
@@ -26,4 +27,10 @@ export const defaultSettings: Settings = {
   autoInstall: true,
   confirmBeforeInstall: false,
   deleteAfterInstall: false,
+  coreFrameworks: [
+    'Content Patcher',
+    'Farm Type Manager',
+    'Json Assets',
+    'SpaceCore',
+  ],
 };
