@@ -3,12 +3,15 @@ import { X, FolderOpen } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { Settings, Theme, Language, ModGroups } from '../../../types/settings';
+import { Checkbox } from '../../ui/Checkbox';
+import { Select } from '../../ui/Select';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   settings: Settings;
   onSave: (settings: Settings) => void;
+  onAutoDetect: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -196,7 +199,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               {/* Nexus Auth Cookie */}
-              <div className="space-y-1.5">
+              {/* <div className="space-y-1.5">
                 <label className="text-xs font-medium text-stone-400 font-sans">
                   Nexus Auth Cookie <span className="text-stone-600">(optional)</span>
                 </label>
@@ -207,7 +210,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full border text-xs px-3 py-2 focus:outline-none focus:border-orange-500/50 transition-colors font-mono bg-stone-900 border-stone-800 text-stone-300"
                   placeholder="Your Nexus Mods auth cookie"
                 />
-              </div>
+              </div> */}
 
               {/* Nexus API Key */}
               <div className="space-y-1.5">
@@ -249,36 +252,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </p>
             </div>
 
-            <div className="space-y-2">
-              <label className="flex items-center space-x-2 cursor-pointer p-2 rounded hover:bg-stone-900 border border-transparent hover:border-stone-800 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={settings.autoInstall}
-                  onChange={(e) => setSettings({ ...settings, autoInstall: e.target.checked })}
-                  className="rounded border-stone-700 bg-stone-800 text-orange-500 focus:ring-orange-500/50"
-                />
-                <span className="text-xs text-stone-300 font-sans">Automatically install mods after download</span>
-              </label>
+            <div className="space-y-3">
+              <Checkbox
+                label="Automatically install mods after download"
+                checked={settings.autoInstall}
+                onChange={(checked) => setSettings({ ...settings, autoInstall: checked })}
+              />
 
-              <label className="flex items-center space-x-2 cursor-pointer p-2 rounded hover:bg-stone-900 border border-transparent hover:border-stone-800 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={settings.confirmBeforeInstall}
-                  onChange={(e) => setSettings({ ...settings, confirmBeforeInstall: e.target.checked })}
-                  className="rounded border-stone-700 bg-stone-800 text-orange-500 focus:ring-orange-500/50"
-                />
-                <span className="text-xs text-stone-300 font-sans">Ask for confirmation before installing</span>
-              </label>
+              <Checkbox
+                label="Ask for confirmation before installing"
+                checked={settings.confirmBeforeInstall}
+                onChange={(checked) => setSettings({ ...settings, confirmBeforeInstall: checked })}
+              />
 
-              <label className="flex items-center space-x-2 cursor-pointer p-2 rounded hover:bg-stone-900 border border-transparent hover:border-stone-800 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={settings.deleteAfterInstall}
-                  onChange={(e) => setSettings({ ...settings, deleteAfterInstall: e.target.checked })}
-                  className="rounded border-stone-700 bg-stone-800 text-orange-500 focus:ring-orange-500/50"
-                />
-                <span className="text-xs text-stone-300 font-sans">Delete downloaded archive after successful install</span>
-              </label>
+              <Checkbox
+                label="Delete downloaded archive after successful install"
+                checked={settings.deleteAfterInstall}
+                onChange={(checked) => setSettings({ ...settings, deleteAfterInstall: checked })}
+              />
             </div>
           </div>
 
@@ -297,35 +288,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <div className="grid grid-cols-1 gap-4">
               {/* Theme */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-stone-400 font-sans">
-                  Theme
-                </label>
-                <select
-                  value={settings.theme}
-                  onChange={(e) => setSettings({ ...settings, theme: e.target.value as Theme })}
-                  className="w-full border text-xs px-3 py-2 focus:outline-none focus:border-orange-500/50 appearance-none bg-stone-900 border-stone-800 text-stone-300"
-                >
-                  <option value="System">System</option>
-                  <option value="Dark">Dark</option>
-                  <option value="Light">Light</option>
-                </select>
-              </div>
+              <Select
+                label="Theme"
+                value={settings.theme}
+                onChange={(value) => setSettings({ ...settings, theme: value as Theme })}
+                options={[
+                  { label: 'System', value: 'System' },
+                  { label: 'Dark', value: 'Dark' },
+                  { label: 'Light', value: 'Light' },
+                ]}
+              />
 
               {/* Language */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-stone-400 font-sans">
-                  Language
-                </label>
-                <select
-                  value={settings.language}
-                  onChange={(e) => setSettings({ ...settings, language: e.target.value as Language })}
-                  className="w-full border text-xs px-3 py-2 focus:outline-none focus:border-orange-500/50 appearance-none bg-stone-900 border-stone-800 text-stone-300"
-                >
-                  <option value="English">English</option>
-                  <option value="Bahasa Indonesia">Bahasa Indonesia</option>
-                </select>
-              </div>
+              <Select
+                label="Language"
+                value={settings.language}
+                onChange={(value) => setSettings({ ...settings, language: value as Language })}
+                options={[
+                  { label: 'English', value: 'English' },
+                  { label: 'Bahasa Indonesia', value: 'Bahasa Indonesia' },
+                ]}
+              />
 
               {/* Mod Groups */}
               <div className="space-y-1.5">
@@ -337,8 +320,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <label
                       key={group}
                       className={`cursor-pointer border p-2 flex flex-col items-center justify-center gap-1 transition-colors ${settings.modGroups === group
-                          ? 'border-orange-500/50 bg-orange-500/10'
-                          : 'border-stone-800 bg-stone-900 hover:border-stone-700'
+                        ? 'border-orange-500/50 bg-orange-500/10'
+                        : 'border-stone-800 bg-stone-900 hover:border-stone-700'
                         }`}
                     >
                       <input
