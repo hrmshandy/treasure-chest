@@ -40,6 +40,10 @@ export function useToast() {
     return showToast('error', title, { message, action, duration: 0 });
   }, [showToast]);
 
+  const warning = useCallback((title: string, message?: string) => {
+    return showToast('warning', title, { message });
+  }, [showToast]);
+
   const info = useCallback((title: string, message?: string) => {
     return showToast('info', title, { message });
   }, [showToast]);
@@ -54,6 +58,7 @@ export function useToast() {
     dismissToast,
     success,
     error,
+    warning,
     info,
     download,
   };
