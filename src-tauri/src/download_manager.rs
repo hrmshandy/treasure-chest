@@ -45,6 +45,7 @@ pub struct DownloadProgress {
     pub progress_percent: f64,
 }
 
+#[derive(Clone)]
 pub struct DownloadManager {
     queue: Arc<Mutex<VecDeque<DownloadTask>>>,
     active: Arc<Mutex<HashMap<String, DownloadTask>>>,
@@ -73,6 +74,26 @@ impl DownloadManager {
 
     /// Add a download to the queue
     pub async fn add_to_queue(&self, nxm_url: NxmUrl) -> Result<String, String> {
+        // Check if mod is already installed
+        let settings = crate::settings::Settings::load(&self.app_handle)
+            .map_err(|e| format!("Failed to load settings: {}", e))?;
+        
+        if !settings.game_path.is_empty() {
+            let game_path = PathBuf::from(&settings.game_path);
+            let installed_mods = crate::mod_installer::scan_mods(&game_path);
+            
+            for mod_info in installed_mods {
+                if let (Some(mid), Some(fid)) = (mod_info.nexus_mod_id, mod_info.nexus_file_id) {
+                    if mid == nxm_url.mod_id && fid == nxm_url.file_id {
+                        return Err(format!(
+                            "Mod '{}' (version {}) is already installed and up to date.",
+                            mod_info.name, mod_info.version
+                        ));
+                    }
+                }
+            }
+        }
+
         let download_id = Uuid::new_v4().to_string();
 
         // Generate filename from mod_id and file_id
@@ -99,13 +120,23 @@ impl DownloadManager {
         let _ = self.app_handle.emit("download-queued", &task);
 
         // Start processing if permits available
-        self.start_next_download().await;
+        // Start processing if permits available
+        self.start_next_download();
 
         Ok(download_id)
     }
 
     /// Start the next download from the queue if permits available
-    async fn start_next_download(&self) {
+    /// Start the next download from the queue if permits available
+    fn start_next_download(&self) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            manager.process_next_download().await;
+        });
+    }
+
+    /// Internal async function to process the next download
+    async fn process_next_download(&self) {
         // Try to acquire a permit without blocking
         if let Ok(permit) = self.semaphore.clone().try_acquire_owned() {
             // Get next queued download
@@ -140,6 +171,9 @@ impl DownloadManager {
                     client: self.client.clone(),
                 };
 
+                // Clone self to trigger next download
+                let next_trigger = self.clone();
+
                 tokio::spawn(async move {
                     let result = manager.execute_download(task.clone()).await;
 
@@ -157,8 +191,7 @@ impl DownloadManager {
                     }
 
                     // Try to start next download
-                    // Note: We can't call self.start_next_download() here because self is moved
-                    // The frontend will need to poll or we need a different architecture
+                    next_trigger.start_next_download();
                 });
             }
         }
