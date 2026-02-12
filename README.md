@@ -2,6 +2,8 @@
 
 A cross-platform desktop application for managing Stardew Valley mods with seamless Nexus Mods integration.
 
+![Treasure Chest - Stardew Valley Mods Manager](screenshots/app-screenshot.png)
+
 ## About
 
 This mod manager provides a modern, user-friendly interface for managing your Stardew Valley mods. It automatically detects your game installation, scans installed mods, and provides one-click installation from Nexus Mods via the `nxm://` protocol handler.
